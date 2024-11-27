@@ -8,4 +8,4 @@ Makes your keyboard/mouse wireless
 - Measure the voltage on the Lion battery - not implemented
 - Solve high power consumption problems - maybe done
 # Important:
-- This code was written from ESP-IDF examples, also you need ESP32 board which supports USB protocol in hardware(in my case it is ESP32-S3-Zero)
+- This code was written from ESP-IDF examples, also you need ESP32 board which supports USB protocol in hardware(in my case it is ESP32-S3-Zero and ESP-IDF v5.2)

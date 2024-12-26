@@ -19,7 +19,7 @@
 #include "esp_bt.h"
 
 #define USE_ADC
-#define DEBUG
+//#define DEBUG
 //#define DEBUG_BLE
 
 #include "esp_hidd_prf_api.h"
@@ -503,18 +503,21 @@ void usb_lib_task(void *arg)
 }
 
 #ifdef USE_ADC
-void adc_test_task(void *arg)
+void battery_measurement_task(void *arg)
 {
-    
     while (1) {
         // Wait queue
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHAN0, &adc_raw));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHAN0, adc_raw);
+        #ifdef DEBUG
+            ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHAN0, adc_raw);
+        #endif
         if (do_calibration1_chan0) {
             ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw, &voltage));
-            ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV Batt Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHAN0, voltage, voltage*4/3);
-            if(voltage >= 2475){
-                if(voltage <= 2550){
+            #ifdef DEBUG
+                ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV Batt Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHAN0, voltage, voltage*4/3);
+            #endif
+            if(voltage >= 2415){
+                if(voltage <= 2525){
                     vTaskDelay(pdMS_TO_TICKS(250));
                     hid_led_request(0x00);
                     vTaskDelay(pdMS_TO_TICKS(250));
@@ -525,15 +528,21 @@ void adc_test_task(void *arg)
                         vTaskDelay(pdMS_TO_TICKS(250));
                         hid_led_request(led_write);
                     }
-                    ESP_LOGI(TAG, "HID Battery low warning");
+                    #ifdef DEBUG
+                        ESP_LOGI(TAG, "HID Battery low warning");
+                    #endif
                 }else{
-                    ESP_LOGI(TAG, "HID Battery high");
+                    #ifdef DEBUG
+                        ESP_LOGI(TAG, "HID Battery high");
+                    #endif
                 }
             }else {
-                ESP_LOGI(TAG, "HID Battery low");
+                #ifdef DEBUG
+                    ESP_LOGI(TAG, "HID Battery low");
+                #endif
             }
         }
-        printf("HID led write %d\n", led_write);
+        //printf("HID led write %d\n", led_write);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
     vTaskDelete(NULL);
@@ -571,8 +580,8 @@ void app_main(void)
 
     //-------------ADC1 Calibration Init---------------//
     do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC1_CHAN0, ADC_ATTEN, &adc1_cali_chan0_handle);
-    xTaskCreate(adc_test_task,
-                "adc_test",
+    xTaskCreate(battery_measurement_task,
+                "battery_measurement_task",
                 4096,
                 xTaskGetCurrentTaskHandle(),
                 2, NULL);

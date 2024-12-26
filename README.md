@@ -5,7 +5,7 @@ Makes your keyboard/mouse wireless
 ## Todo:
 - Keyboard LEDs support - done
 - Keyboard consumer events support - done
-- Measure the voltage on the Lion battery - not implemented
+- Measure the voltage on the Lion battery - done
 - Solve high power consumption problems - maybe done
 # Important:
 - This code was written from ESP-IDF examples, also you need ESP32 board which supports USB protocol in hardware(in my case it is ESP32-S3-Zero and ESP-IDF v5.2)

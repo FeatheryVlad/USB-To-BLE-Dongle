@@ -18,6 +18,10 @@
 #include "nvs_flash.h"
 #include "esp_bt.h"
 
+#define USE_ADC
+#define DEBUG
+//#define DEBUG_BLE
+
 #include "esp_hidd_prf_api.h"
 #include "esp_bt_defs.h"
 #include "esp_gap_ble_api.h"
@@ -32,9 +36,13 @@
 #include "usb/hid_usage_keyboard.h"
 #include "usb/hid_usage_mouse.h"
 
-#define TAG "BLE_HID"
+#ifdef USE_ADC
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#endif
 
-//#define DEBUG
+#define TAG "BLE_HID"
 
 typedef enum {
     APP_EVENT = 0,
@@ -57,8 +65,73 @@ static const char *hid_proto_name_str[] = {
     "MOUSE"
 };
 
+#ifdef USE_ADC
+
+#define ADC1_CHAN0  ADC_CHANNEL_0
+#define ADC_ATTEN   ADC_ATTEN_DB_12
+
+static int adc_raw;
+static int voltage;
+adc_oneshot_unit_handle_t adc1_handle;
+adc_cali_handle_t adc1_cali_chan0_handle = NULL;
+bool do_calibration1_chan0;
+static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
+static void adc_calibration_deinit(adc_cali_handle_t handle);
+
+/*---------------------------------------------------------------
+        ADC Calibration
+---------------------------------------------------------------*/
+static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
+{
+    adc_cali_handle_t handle = NULL;
+    esp_err_t ret = ESP_FAIL;
+    bool calibrated = false;
+
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    if (!calibrated) {
+        ESP_LOGI(TAG, "calibration scheme version is %s", "Curve Fitting");
+        adc_cali_curve_fitting_config_t cali_config = {
+            .unit_id = unit,
+            .chan = channel,
+            .atten = atten,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
+        if (ret == ESP_OK) {
+            calibrated = true;
+        }
+    }
+#endif
+
+    *out_handle = handle;
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Calibration Success");
+    } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
+        ESP_LOGW(TAG, "eFuse not burnt, skip software calibration");
+    } else {
+        ESP_LOGE(TAG, "Invalid arg or no memory");
+    }
+
+    return calibrated;
+}
+
+static void adc_calibration_deinit(adc_cali_handle_t handle)
+{
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    ESP_LOGI(TAG, "deregister %s calibration scheme", "Curve Fitting");
+    ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
+
+//#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+//    ESP_LOGI(TAG, "deregister %s calibration scheme", "Line Fitting");
+//    ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
+#endif
+}
+
+#endif
+
 QueueHandle_t app_event_queue = NULL;
 
+uint8_t led_write = 0x00;
 app_event_queue_t evt_queue;
 hid_host_device_handle_t hid_keyboard_handle;
 hid_host_device_handle_t hid_mouse_handle;
@@ -68,8 +141,9 @@ static bool keybind = false;
 #define CHAR_DECLARATION_SIZE   (sizeof(uint8_t))
 
 static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param);
+static void hid_led_request(uint8_t led_write);
 
-#define HIDD_DEVICE_NAME            "BLE RGB Keyboard"
+#define HIDD_DEVICE_NAME            "BLE RGB Keyboard1"
 static uint8_t hidd_service_uuid128[] = {
     /* LSB <--------------------------------------------------------------------------------> MSB */
     //first uuid, 16bit, [12],[13] is the value
@@ -151,20 +225,35 @@ static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *
                 ESP_LOGI(TAG, "ESP_HIDD_EVENT_BLE_LED_REPORT_WRITE_EVT");
                 ESP_LOG_BUFFER_HEX(TAG, param->led_write.data, param->led_write.length);
             #endif
-            uint8_t rep[1] = { 0x00 };
-            rep[0] = param->led_write.data[0];
-            if (ESP_OK == hid_class_request_set_report(hid_keyboard_handle,
-                    HID_REPORT_TYPE_OUTPUT, 0x0, rep, 1)) {
-                #ifdef DEBUG
-                    printf("HID set report type %d, id %d\n", HID_REPORT_TYPE_OUTPUT, 0x00);
-                #endif
-            }
+            led_write = param->led_write.data[0];
+#ifndef DEBUG_BLE
+            hid_led_request(led_write);
+            //uint8_t rep[1] = { led_write };
+            ////rep[0] = led_write;
+            //if (ESP_OK == hid_class_request_set_report(hid_keyboard_handle,
+            //        HID_REPORT_TYPE_OUTPUT, 0x0, rep, 1)) {
+            //    #ifdef DEBUG
+            //        printf("HID set report type %d, id %d\n", HID_REPORT_TYPE_OUTPUT, 0x00);
+            //    #endif
+            //}
+#endif
             break;
         }
         default:
             break;
     }
     return;
+}
+
+static void hid_led_request(uint8_t led_write){
+    uint8_t rep[1] = { led_write };
+    //rep[0] = led_write;
+    if (ESP_OK == hid_class_request_set_report(hid_keyboard_handle,
+            HID_REPORT_TYPE_OUTPUT, 0x0, rep, 1)) {
+        #ifdef DEBUG
+            printf("HID set report type %d, id %d\n", HID_REPORT_TYPE_OUTPUT, 0x00);
+        #endif
+    }
 }
 
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
@@ -222,6 +311,29 @@ void hid_host_device_callback(hid_host_device_handle_t hid_device_handle,
         xQueueSend(app_event_queue, &evt_queue, 0);
     }
 }
+
+//static esp_err_t esp_ble_hidd_dev_battery_set(void *devp, uint8_t level)
+//{
+//    esp_err_t ret;
+//    esp_ble_hidd_dev_t *dev = (esp_ble_hidd_dev_t *)devp;
+//    if (!dev || s_dev != dev) {
+//        return ESP_FAIL;
+//    }
+//    dev->bat_level = level;
+
+//    if (!dev->connected || dev->bat_ccc.value == 0) {
+//        //if we are not yet connected, that is not an error
+//        return ESP_OK;
+//    }
+//    if(dev->bat_ccc.notify_enable){
+//        ret = esp_ble_gatts_send_indicate(dev->bat_svc.gatt_if, dev->conn_id, dev->bat_level_handle, 1, &dev->bat_level, false);
+//        if (ret) {
+//            ESP_LOGE(TAG, "esp_ble_gatts_send_notify failed: %d", ret);
+//            return ESP_FAIL;
+//        }
+//    }
+//    return ESP_OK;
+//}
 
 void hid_dev_send_report(esp_gatt_if_t gatts_if, uint16_t conn_id,
                                     uint8_t id, uint8_t type, uint8_t length, uint8_t *data)
@@ -390,9 +502,48 @@ void usb_lib_task(void *arg)
     vTaskDelete(NULL);
 }
 
+#ifdef USE_ADC
+void adc_test_task(void *arg)
+{
+    
+    while (1) {
+        // Wait queue
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHAN0, &adc_raw));
+        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHAN0, adc_raw);
+        if (do_calibration1_chan0) {
+            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw, &voltage));
+            ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV Batt Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHAN0, voltage, voltage*4/3);
+            if(voltage >= 2475){
+                if(voltage <= 2550){
+                    vTaskDelay(pdMS_TO_TICKS(250));
+                    hid_led_request(0x00);
+                    vTaskDelay(pdMS_TO_TICKS(250));
+                    hid_led_request(0x07);
+                    vTaskDelay(pdMS_TO_TICKS(250));
+                    hid_led_request(0x00);
+                    if(sec_conn){
+                        vTaskDelay(pdMS_TO_TICKS(250));
+                        hid_led_request(led_write);
+                    }
+                    ESP_LOGI(TAG, "HID Battery low warning");
+                }else{
+                    ESP_LOGI(TAG, "HID Battery high");
+                }
+            }else {
+                ESP_LOGI(TAG, "HID Battery low");
+            }
+        }
+        printf("HID led write %d\n", led_write);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    vTaskDelete(NULL);
+}
+#endif
+
 void app_main(void)
 {
     esp_err_t ret;
+#ifndef DEBUG_BLE
     BaseType_t task_created;
     task_created = xTaskCreatePinnedToCore(usb_lib_task,
                                            "usb_events",
@@ -400,8 +551,32 @@ void app_main(void)
                                            xTaskGetCurrentTaskHandle(),
                                            2, NULL, 0);
     assert(task_created == pdTRUE);
+#endif
     ulTaskNotifyTake(false, 1000);
 
+#ifdef USE_ADC
+    //-------------ADC1 Init---------------//
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+    //-------------ADC1 Config---------------//
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten = ADC_ATTEN,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHAN0, &config));
+    //ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN1, &config));
+
+    //-------------ADC1 Calibration Init---------------//
+    do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC1_CHAN0, ADC_ATTEN, &adc1_cali_chan0_handle);
+    xTaskCreate(adc_test_task,
+                "adc_test",
+                4096,
+                xTaskGetCurrentTaskHandle(),
+                2, NULL);
+#endif
     // Initialize NVS.
     ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -441,7 +616,7 @@ void app_main(void)
     if((ret = esp_hidd_profile_init()) != ESP_OK) {
         ESP_LOGE(TAG, "%s init bluedroid failed", __func__);
     }
-
+    //set_initial_bat_level(70u);
     ///register the callback function to the gap module
     esp_ble_gap_register_callback(gap_event_handler);
     esp_hidd_register_callbacks(hidd_event_callback);
@@ -457,7 +632,7 @@ void app_main(void)
     esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
-
+#ifndef DEBUG_BLE
     const hid_host_driver_config_t hid_host_driver_config = {
         .create_background_task = true,
         .task_priority = 5,
@@ -502,4 +677,11 @@ void app_main(void)
     ESP_ERROR_CHECK(hid_host_uninstall());
     xQueueReset(app_event_queue);
     vQueueDelete(app_event_queue);
+#endif
+#ifdef USE_ADC
+    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
+    if (do_calibration1_chan0) {
+        adc_calibration_deinit(adc1_cali_chan0_handle);
+    }
+#endif
 }

@@ -138,12 +138,11 @@ hid_host_device_handle_t hid_mouse_handle;
 static uint16_t hid_conn_id = 0;
 static bool sec_conn = false;
 static bool keybind = false;
-#define CHAR_DECLARATION_SIZE   (sizeof(uint8_t))
 
 static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param);
 static void hid_led_request(uint8_t led_write);
 
-#define HIDD_DEVICE_NAME            "BLE RGB Keyboard1"
+#define HIDD_DEVICE_NAME "Dexp Omni Keyboard"
 static uint8_t hidd_service_uuid128[] = {
     /* LSB <--------------------------------------------------------------------------------> MSB */
     //first uuid, 16bit, [12],[13] is the value
@@ -507,6 +506,7 @@ void battery_measurement_task(void *arg)
 {
     while (1) {
         // Wait queue
+        int delay_time = 250;
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHAN0, &adc_raw));
         #ifdef DEBUG
             ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHAN0, adc_raw);
@@ -516,34 +516,34 @@ void battery_measurement_task(void *arg)
             #ifdef DEBUG
                 ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV Batt Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHAN0, voltage, voltage*4/3);
             #endif
-            if(voltage >= 2415){
-                if(voltage <= 2525){
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                    hid_led_request(0x00);
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                    hid_led_request(0x07);
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                    hid_led_request(0x00);
-                    if(sec_conn){
-                        vTaskDelay(pdMS_TO_TICKS(250));
-                        hid_led_request(led_write);
-                    }
+            if(voltage <= 2525){
+                if(voltage <= 2415){
+                    delay_time = 125;
                     #ifdef DEBUG
-                        ESP_LOGI(TAG, "HID Battery low warning");
-                    #endif
-                }else{
-                    #ifdef DEBUG
-                        ESP_LOGI(TAG, "HID Battery high");
+                        ESP_LOGI(TAG, "HID Battery low");
                     #endif
                 }
-            }else {
+                vTaskDelay(pdMS_TO_TICKS(delay_time*2));
+                hid_led_request(0x00);
+                vTaskDelay(pdMS_TO_TICKS(delay_time));
+                hid_led_request(0x07);
+                vTaskDelay(pdMS_TO_TICKS(delay_time));
+                hid_led_request(0x00);
+                if(sec_conn){
+                    vTaskDelay(pdMS_TO_TICKS(delay_time));
+                    hid_led_request(led_write);
+                }
                 #ifdef DEBUG
-                    ESP_LOGI(TAG, "HID Battery low");
+                    ESP_LOGI(TAG, "HID Battery low warning");
+                #endif
+            }else{
+                #ifdef DEBUG
+                    ESP_LOGI(TAG, "HID Battery high");
                 #endif
             }
         }
         //printf("HID led write %d\n", led_write);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(delay_time*3));
     }
     vTaskDelete(NULL);
 }
